@@ -150,21 +150,68 @@ app.post("/posts", async (req, res) => {
   }
 });
 
+//Endpoint to like a post
 app.post("/likes", async (req, res) => {
   const { user_id, post_id } = req.body;
-
   const client = await pool.connect();
 
   try {
-    const newLike = await client.query(
-      "INSERT INTO likes (user_id, post_id, created_at) VALUES ($1, $2, CURRENT_TIMESTAMP) RETURNING *",
+    //check if an inactive like for this user and post already exists
+    const prevLike = await client.query(
+      `
+      SELECT * FROM LIKES WHERE user_id = $1 AND post_id = $2 AND active = false
+    `,
       [user_id, post_id],
     );
 
-    res.json(newLike.rows[0]);
-  } catch (err) {
-    console.log(err.stack);
-    res.status(500).send("An error occurred, please try again.");
+    if (prevLike.rowCount > 0) {
+      //if the inactive like exists, update it to active
+      const newLike = await client.query(
+        `
+        UPDATE likes SET active = true WHERE id = $1 RETURNING *
+      `,
+        [prevLike.rows[0].id],
+      );
+      res.json(newLike.rows[0]);
+    } else {
+      // if it does not exists, insert new like row with active as true
+      const newLike = await client.query(
+        `
+        INSERT INTO likes (user_id, post_id, created_at, active)
+        VALUES ($1, $2, CURRENT_TIMESTAMP, true)
+        RETURNING *
+      `,
+        [user_id, post_id],
+      );
+      res.json(newLike.rows[0]);
+    }
+  } catch (error) {
+    console.error("Error", error.message);
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+//Endpoint to unlike a post
+app.put("/likes/:userId/:postId", async (req, res) => {
+  const { userId, postId } = req.params;
+  const client = await pool.connect();
+
+  try {
+    // Update the like row to inactive
+    await client.query(
+      `
+      UPDATE likes
+      SET active = false
+      WHERE user_id = $1 AND post_id = $2 AND active = true
+    `,
+      [userId, postId],
+    );
+    res.json({ message: "The like has been removed successfully!" });
+  } catch (error) {
+    console.error("Error", error.message);
+    res.status(500).json({ error: error.message });
   } finally {
     client.release();
   }
@@ -179,7 +226,7 @@ app.get("/likes/post/:post_id", async (req, res) => {
     SELECT users.username, users.id AS user_id, likes.id AS likes_id
     FROM likes
     INNER JOIN users ON likes.user_id = users.id
-    WHERE likes.post_id = $1
+    WHERE likes.post_id = $1 AND active = true
   `,
       [post_id],
     );
